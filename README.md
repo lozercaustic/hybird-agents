@@ -70,8 +70,17 @@ Setup:
 ```sh
 make test                                                  # install hy first (see Install)
 codex --version                                            # Codex CLI must be on PATH and logged in
-claude --plugin-dir "$PWD/plugin/codex-team"               # or copy the folder into ~/.claude/dev-mods/<session>/
 ```
+
+Install globally (all projects) via the repo's local marketplace:
+
+```sh
+claude plugin marketplace add "$PWD"
+claude plugin install codex-team@hybrid-agents --scope user
+claude plugin marketplace update hybrid-agents             # pick up later edits
+```
+
+Or try it for one session only: `claude --plugin-dir "$PWD/plugin/codex-team"`.
 
 - Codex must be allowed to write the store (`writable_roots` above). The mod uses your `~/.codex/config.toml` sandbox by default; put `READ ONLY` in the task to force a read-only sandbox.
 - Rate limits (429) are retried automatically (15/30/45/60 s).

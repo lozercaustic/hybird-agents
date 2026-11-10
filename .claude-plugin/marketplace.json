@@ -1,0 +1,11 @@
+{
+  "name": "hybrid-agents",
+  "owner": { "name": "npham" },
+  "plugins": [
+    {
+      "name": "codex-team",
+      "source": "./plugin/codex-team",
+      "description": "Codex as a native subagent: Codex plays the subagent's model, so its commands and answers render as real tool-call rows in the agent view."
+    }
+  ]
+}
