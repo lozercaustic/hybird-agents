@@ -1,0 +1,1 @@
+{ "name": "codex-team", "version": "0.3.0", "description": "Codex as a native subagent: Codex plays the subagent's model, so its commands and answers render as real tool-call rows in the agent view." }

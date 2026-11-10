@@ -59,6 +59,26 @@ hy send codex /quit      # stop the worker
 refreshing every second. `↑/↓` select, `Enter` answer, `m` message codex, `q` quit.
 It talks to Zig only through the C ABI in `include/hy.h`; it never reads the file format.
 
+## Codex as a native subagent (Claude Code mod)
+
+`plugin/codex-team` is a Claude Code mod. When you say "work together with codex to do X", Claude spawns a `codex-team:codex` subagent:
+it appears in the tasks list like any subagent, Codex's commands and answers stream live as native Bash/text rows in its own view, and the final answer returns to Claude.
+Codex shares the same `hy` store, so facts and results are visible to both.
+
+Setup:
+
+```sh
+make test                                                  # install hy first (see Install)
+codex --version                                            # Codex CLI must be on PATH and logged in
+claude --plugin-dir "$PWD/plugin/codex-team"               # or copy the folder into ~/.claude/dev-mods/<session>/
+```
+
+- Codex must be allowed to write the store (`writable_roots` above). The mod uses your `~/.codex/config.toml` sandbox by default; put `READ ONLY` in the task to force a read-only sandbox.
+- Rate limits (429) are retried automatically (15/30/45/60 s).
+- Switch views: tasks list, or `/codex-view` (`/codex-view main` returns).
+- Restart Claude Code after the first install; agent types load at session start.
+- How it works: the mod answers the subagent's model request itself (`turn.step` hook), streams `codex exec --json` events as Bash tool calls whose results are Codex's recorded output (nothing runs twice), and ends with `SubagentHandback`.
+
 ## Storage format and protocol (v1)
 
 Append-only log, `~/.hybrid/k.hy` (`$HY_DB`), `flock`, magic `HY1\n`.
