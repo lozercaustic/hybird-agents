@@ -1,11 +1,11 @@
 import type { Register } from 'claude-code'
 
 type Ev = { t: 'start'; id: string; command: string } | { t: 'msg'; text: string } | { t: 'file'; id: string; text: string }
-type Job = { id: string; task: string; readOnly: boolean; events: Ev[]; outputs: Map<string, string>; ended: boolean; err: string; thread: string; inTok: number; outTok: number; cached: number }
+type Job = { id: string; task: string; cwd: string; readOnly: boolean; events: Ev[]; outputs: Map<string, string>; ended: boolean; err: string; thread: string; inTok: number; outTok: number; cached: number }
 type State = { job: Job; cursor: number; held: string; finalText?: string }
 
 const queue: Job[] = []
-const pending: string[] = []
+const pending: { prompt: string; cwd: string }[] = []
 const states = new Map<string, State>()
 const toolMap = new Map<string, { job: Job; itemId: string }>()
 const codexAgents = new Set<string>()
@@ -13,20 +13,24 @@ let seq = 0
 let worker = false
 let lastAgent: string | undefined
 
+const DIRECT = /\b(hy\s+run\s+codex|hy\s+tx\s+codex|codex\s+exec)\b/
 const clip = (s: string, n = 20000) => (s.length > n ? s.slice(0, n) + `\n… (+${s.length - n} chars)` : s)
 
 async function runJob($: any, j: Job) {
   // Default: the sandbox from ~/.codex/config.toml (so `hy` can write its store, see README). "READ ONLY" in the task forces read-only.
-  const base = ['codex', 'exec', '--json', '--skip-git-repo-check', ...(j.readOnly ? ['-s', 'read-only'] : [])]
+  await modelOf($)
+  // The provider gateway rate-limits (429); codex's default 4-5 retries run out, so raise them.
+  const retries = codexProvider ? ['-c', `model_providers.${codexProvider}.request_max_retries=12`, '-c', `model_providers.${codexProvider}.stream_max_retries=12`] : []
+  const base = ['codex', 'exec', '--json', '--skip-git-repo-check', ...retries, ...(j.readOnly ? ['-s', 'read-only'] : [])]
   try {
     for (let attempt = 1; attempt <= 5; attempt++) {
       const argv = [...base]
       if (j.thread) argv.push('resume', j.thread)
-      argv.push(j.task)
+      argv.push(j.thread ? 'Continue the previous task from where it stopped (the last request was rate-limited). Do not repeat finished steps.' : j.task)
       let buf = ''
       j.err = ''
       let gotAnswer = j.events.some(x => x.t === 'msg')
-      for await (const chunk of $.process.spawn({ argv, env: { HY_AS: 'codex' } }) as any) {
+      for await (const chunk of $.process.spawn({ argv, ...(j.cwd ? { cwd: j.cwd } : {}), env: { HY_AS: 'codex' } }) as any) {
         if (chunk.stream !== 'stdout') continue
         buf += chunk.text
         let i
@@ -56,10 +60,13 @@ async function runJob($: any, j: Job) {
 }
 
 let codexModel = ''
+let codexProvider = ''
 async function modelOf($: any) {
   if (!codexModel) {
     const r = await $.process.run(['sh', '-c', "sed -n 's/^model *= *\"\\(.*\\)\"/\\1/p' \"${CODEX_HOME:-$HOME/.codex}/config.toml\" | head -1"])
     codexModel = r.stdout.trim() || 'codex'
+    const pr = await $.process.run(['sh', '-c', "sed -n 's/^model_provider *= *\"\\(.*\\)\"/\\1/p' \"${CODEX_HOME:-$HOME/.codex}/config.toml\" | head -1"])
+    codexProvider = pr.stdout.trim()
   }
   return codexModel
 }
@@ -105,7 +112,7 @@ export const register: Register = on => {
 
   on('agent.spawn', async ($, e: any, next) => {
     if (e.subagentType === 'codex-team:codex') {
-      pending.push(e.prompt)
+      pending.push({ prompt: e.prompt, cwd: e.cwd ?? (await $.session.cwd()) })
       // The row's model label comes from the spawn's model; show Codex's own.
       return next({ ...e, model: await modelOf($) })
     }
@@ -126,8 +133,8 @@ export const register: Register = on => {
     const model = await modelOf($)
     let s = states.get(agentId)
     if (!s) {
-      const task = pending.shift() ?? ''
-      const job: Job = { id: 'c' + ++seq, task, readOnly: /READ ONLY/.test(task), events: [], outputs: new Map(), ended: false, err: '', thread: '', inTok: 0, outTok: 0, cached: 0 }
+      const { prompt: task, cwd } = pending.shift() ?? { prompt: '', cwd: '' }
+      const job: Job = { id: 'c' + ++seq, task, cwd, readOnly: /READ ONLY/.test(task), events: [], outputs: new Map(), ended: false, err: '', thread: '', inTok: 0, outTok: 0, cached: 0 }
       s = { job, cursor: 0, held: '' }
       states.set(agentId, s)
       queue.push(job)
@@ -171,7 +178,12 @@ export const register: Register = on => {
 
   on('tool.call', { tool: 'Bash' }, async ($, e: any, next: any) => {
     const m = toolMap.get(e.tool_use_id)
-    if (!m) return next(e)
+    if (!m) {
+      // Force the native route: Claude must delegate to Codex through the subagent, not by shelling out.
+      if (!e.agentId && DIRECT.test(e.command ?? '') && !/HY_DIRECT=1/.test(e.command))
+        return { deny: 'Delegating to Codex must use the Agent tool with subagent_type "codex-team:codex" (native view, live stream), not Bash. Spawn it with the task as the prompt. Prefix HY_DIRECT=1 only if the user explicitly asked for the CLI route.' }
+      return next(e)
+    }
     while (!m.job.outputs.has(m.itemId) && !m.job.ended && !next.signal?.aborted) await tick($)
     return { result: { stdout: m.job.outputs.get(m.itemId) ?? '', stderr: '', interrupted: false } }
   })
